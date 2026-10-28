@@ -1,0 +1,13 @@
+{
+  "name": "pumppulse-sa-prototype",
+  "version": "1.0.0",
+  "description": "PumpPulse SA - South African Crowdsourced Fuel Price Capture, Navigation & Gamification Mobile App Prototype",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "echo 'Ready for Render.com'"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

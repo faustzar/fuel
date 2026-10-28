@@ -1,0 +1,9 @@
+{
+  "name": "PumpPulse SA - Fuel Price & Rewards",
+  "short_name": "PumpPulse SA",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1120",
+  "theme_color": "#10b981",
+  "orientation": "portrait"
+}

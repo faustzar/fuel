@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>PumpPulse SA — Fuel Price Capture, Navigation & Rewards</title>
+  <link rel="manifest" href="/manifest.json" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@600;700;800&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #060b16;
+      color: #f8fafc;
+      overscroll-behavior-y: contain;
+    }
+    .mono-price {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    #map {
+      height: 100%;
+      width: 100%;
+      z-index: 1;
+      background: #0f172a;
+    }
+    /* Custom dark map filter */
+    .leaflet-tile-pane {
+      filter: brightness(0.78) invert(1) contrast(1.3) hue-rotate(200deg) saturate(0.4);
+    }
+    .price-pin {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      transform: translate(-50%, -100%);
+    }
+    .price-pin-bubble {
+      padding: 4px 8px;
+      border-radius: 10px;
+      font-weight: 800;
+      font-size: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+      white-space: nowrap;
+      border: 2px solid rgba(255,255,255,0.9);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .price-pin-arrow {
+      width: 0;
+      height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-top: 7px solid rgba(255,255,255,0.9);
+    }
+    @keyframes scanline {
+      0% { top: 8%; opacity: 0.9; }
+      50% { top: 88%; opacity: 1; }
+      100% { top: 8%; opacity: 0.9; }
+    }
+    .ocr-laser {
+      position: absolute;
+      left: 8%;
+      right: 8%;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #10b981, #34d399, #10b981, transparent);
+      box-shadow: 0 0 12px #10b981;
+      animation: scanline 2.2s ease-in-out infinite;
+    }
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex justify-center items-center bg-slate-950 select-none">
+
+  <!-- Mobile App Shell Frame (Full screen on mobile, Phone bezel on desktop) -->
+  <div class="w-full max-w-[430px] h-screen sm:h-[880px] sm:max-h-[95vh] bg-slate-900 sm:rounded-[38px] sm:border-[6px] sm:border-slate-800 shadow-2xl overflow-hidden flex flex-col relative">
+
+    <!-- Top Gamification & Status Header -->
+    <header class="bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-4 pt-3 pb-2.5 z-30">
+      <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-extrabold text-sm">
+            ⛽
+          </div>
+          <div>
+            <div class="flex items-center gap-1.5">
+              <h1 class="font-extrabold text-sm tracking-tight text-white">PumpPulse <span class="text-emerald-400">SA</span></h1>
+              <span id="regionBadge" class="text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded">Gauteng • Inland</span>
+            </div>
+            <p id="userTierLabel" class="text-[11px] text-slate-400">L3: Bakkiemeister • <span id="xpHeader" class="text-emerald-400 font-semibold">1,420 XP</span></p>
+          </div>
+        </div>
+
+        <!-- Streak & FuelBucks Pill -->
+        <div class="flex items-center gap-1.5">
+          <div class="bg-orange-500/15 border border-orange-500/30 px-2 py-1 rounded-lg flex items-center gap-1" title="Daily Reporting Streak">
+            <span class="text-xs">🔥</span>
+            <span id="streakCount" class="text-xs font-bold text-orange-400">5d</span>
+          </div>
+          <button onclick="switchTab('rewards')" class="bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 px-2.5 py-1 rounded-lg flex items-center gap-1 transition">
+            <span class="text-xs">🪙</span>
+            <span id="coinsHeader" class="text-xs font-bold text-emerald-300">245</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- CEF "First Wednesday" Price Predictor Banner -->
+      <div id="cefAlertBanner" class="bg-gradient-to-r from-indigo-950/90 via-slate-900 to-emerald-950/80 border border-indigo-500/30 rounded-xl px-2.5 py-1.5 flex items-center justify-between text-[11px]">
+        <div class="flex items-center gap-1.5">
+          <span class="text-indigo-400 font-bold">📊 CEF Forecast (Wed):</span>
+          <span class="text-rose-400 font-medium">ULP95 +R0.42↑</span>
+          <span class="text-slate-600">|</span>
+          <span class="text-emerald-400 font-medium">Diesel 50 -R0.68↓</span>
+        </div>
+        <button onclick="showCefModal()" class="text-[10px] text-indigo-300 underline font-semibold ml-1">Advice</button>
+      </div>
+    </header>
+
+    <!-- MAIN CONTENT AREA -->
+    <main class="flex-1 relative overflow-hidden flex flex-col">
+
+      <!-- ==================== TAB 1: MAP & CHEAPEST FINDER ==================== -->
+      <section id="tab-map" class="flex-1 flex flex-col relative h-full">
+
+        <!-- Floating Fuel Grade & Loyalty Controls Over Map -->
+        <div class="absolute top-2.5 left-0 right-0 z-20 px-3 space-y-2 pointer-events-none">
+          <!-- Fuel Grade Pills -->
+          <div class="flex gap-1.5 overflow-x-auto no-scrollbar pointer-events-auto pb-0.5" id="fuelGradeBar">
+            <button onclick="setFuelGrade('diesel50')" data-grade="diesel50" class="grade-btn px-3 py-1.5 rounded-full text-xs font-bold shadow-lg transition whitespace-nowrap bg-emerald-500 text-slate-950">
+              Diesel 50ppm <span class="text-[10px] opacity-80">(Deregulated)</span>
+            </button>
+            <button onclick="setFuelGrade('diesel10')" data-grade="diesel10" class="grade-btn px-3 py-1.5 rounded-full text-xs font-bold shadow-lg transition whitespace-nowrap bg-slate-900/90 text-slate-300 border border-slate-700">
+              Diesel 10ppm
+            </button>
+            <button onclick="setFuelGrade('ulp95')" data-grade="ulp95" class="grade-btn px-3 py-1.5 rounded-full text-xs font-bold shadow-lg transition whitespace-nowrap bg-slate-900/90 text-slate-300 border border-slate-700">
+              ULP 95
+            </button>
+            <button onclick="setFuelGrade('ulp93')" data-grade="ulp93" class="grade-btn px-3 py-1.5 rounded-full text-xs font-bold shadow-lg transition whitespace-nowrap bg-slate-900/90 text-slate-300 border border-slate-700">
+              ULP 93
+            </button>
+          </div>
+
+          <!-- Effective Loyalty Toggle & Tank Size Bar -->
+          <div class="flex items-center justify-between gap-2 pointer-events-auto">
+            <label class="flex items-center gap-2 bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-2.5 py-1 rounded-xl text-[11px] text-slate-200 shadow-lg cursor-pointer">
+              <input type="checkbox" id="loyaltyToggle" onchange="toggleLoyaltyMode()" class="accent-emerald-500 rounded" />
+              <span>💳 Apply SA Loyalty Cashback <span class="text-emerald-400 font-semibold">(eBucks/UCount/Clicks)</span></span>
+            </label>
+            <button onclick="openTankModal()" class="bg-slate-900/90 backdrop-blur-md border border-slate-700/80 px-2.5 py-1 rounded-xl text-[11px] text-slate-300 font-semibold shadow-lg">
+              🚗 <span id="tankSizeLabel">60L</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Interactive Map Container -->
+        <div id="map" class="flex-1"></div>
+
+        <!-- Bottom Overlay: Geofence Quick Prompt + Cheapest Station Navigation Cards -->
+        <div class="bg-slate-900/95 backdrop-blur-md border-t border-slate-800 pt-2.5 pb-3 px-3 z-20 space-y-2.5">
+          <!-- Best Net Savings Header -->
+          <div class="flex items-center justify-between px-1">
+            <div class="flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span class="text-xs font-bold uppercase tracking-wider text-slate-300">Cheapest Net-Savings Near You</span>
+            </div>
+            <span id="activeGradeLabel" class="text-[11px] font-semibold text-emerald-400">Diesel 50ppm • 60L Fill</span>
+          </div>
+
+          <!-- Station Cards Horizontal Scroll -->
+          <div id="stationCardsContainer" class="flex gap-2.5 overflow-x-auto no-scrollbar pb-1">
+            <!-- Populated dynamically by app.js -->
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 2: ROUTE & CHEAPEST LIST ==================== -->
+      <section id="tab-navigate" class="hidden flex-1 overflow-y-auto p-4 space-y-4 bg-slate-900">
+        <div class="bg-slate-800/60 border border-slate-700/70 rounded-2xl p-3.5 space-y-3">
+          <div class="flex items-center justify-between">
+            <h2 class="font-bold text-sm text-white">🧭 Smart Net-Savings Calculator</h2>
+            <span class="text-[11px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-md font-semibold">Anti-Detour Waste</span>
+          </div>
+          <p class="text-xs text-slate-400 leading-relaxed">
+            Driving too far for a cheaper pump price burns fuel. We calculate your <strong class="text-slate-200">True Net Rand Saved</strong> after subtracting round-trip detour fuel burn.
+          </p>
+          <div class="grid grid-cols-3 gap-2 pt-1">
+            <div class="bg-slate-900/90 p-2 rounded-xl border border-slate-800">
+              <label class="text-[10px] text-slate-400 block">Fuel Grade</label>
+              <select id="navGradeSelect" onchange="setFuelGrade(this.value)" class="bg-transparent text-xs font-bold text-emerald-400 w-full focus:outline-none mt-0.5">
+                <option value="diesel50" class="bg-slate-900">Diesel 50ppm</option>
+                <option value="diesel10" class="bg-slate-900">Diesel 10ppm</option>
+                <option value="ulp95" class="bg-slate-900">ULP 95</option>
+                <option value="ulp93" class="bg-slate-900">ULP 93</option>
+              </select>
+            </div>
+            <div class="bg-slate-900/90 p-2 rounded-xl border border-slate-800">
+              <label class="text-[10px] text-slate-400 block">Litres to Fill</label>
+              <input id="fillLitresInput" type="number" value="60" min="10" max="150" onchange="updateTankSize(this.value)" class="bg-transparent text-xs font-bold text-white w-full focus:outline-none mt-0.5" />
+            </div>
+            <div class="bg-slate-900/90 p-2 rounded-xl border border-slate-800">
+              <label class="text-[10px] text-slate-400 block">Consumption</label>
+              <span class="text-xs font-bold text-slate-200 block mt-0.5">7.8 L/100km</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Ranked Station List -->
+        <div class="space-y-2.5" id="rankedStationList">
+          <!-- Populated dynamically -->
+        </div>
+      </section>
+
+      <!-- ==================== TAB 3: ACHIEVEMENTS & LEADERBOARD ==================== -->
+      <section id="tab-achievements" class="hidden flex-1 overflow-y-auto p-4 space-y-4 bg-slate-900">
+        <!-- Driver Tier Card -->
+        <div class="bg-gradient-to-br from-emerald-950 via-slate-800 to-slate-900 border border-emerald-500/30 rounded-2xl p-4 shadow-lg">
+          <div class="flex items-center justify-between mb-2">
+            <div>
+              <span class="text-[10px] uppercase tracking-wider font-bold text-emerald-400">Current SA Driver Rank</span>
+              <h2 id="profileTierTitle" class="text-lg font-extrabold text-white">L3: Bakkiemeister</h2>
+            </div>
+            <div class="text-right">
+              <span class="text-xs text-slate-400 block">Trust Score</span>
+              <span class="text-sm font-extrabold text-emerald-400">98.4% ✓</span>
+            </div>
+          </div>
+
+          <!-- Progress Bar -->
+          <div class="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden my-2 border border-slate-700">
+            <div id="xpProgressBar" class="bg-gradient-to-r from-emerald-500 to-teal-300 h-full transition-all duration-500" style="width: 68%"></div>
+          </div>
+          <div class="flex justify-between text-[11px] text-slate-400">
+            <span id="xpCurrentText">1,420 XP</span>
+            <span id="xpNextTierText">Next: L4 Octane Ranger (2,000 XP)</span>
+          </div>
+
+          <!-- Community Impact Metric -->
+          <div class="mt-3 pt-3 border-t border-slate-700/60 flex items-center justify-between text-xs">
+            <span class="text-slate-300">🤝 Your reports helped <strong id="driversHelpedCount" class="text-white">342 motorists</strong></span>
+            <span class="text-emerald-400 font-bold">Est. R4,180 saved</span>
+          </div>
+        </div>
+
+        <!-- Achievement Badges Grid -->
+        <div>
+          <div class="flex items-center justify-between mb-2.5">
+            <h3 class="font-bold text-sm text-white">🏆 Achievement Badges</h3>
+            <span id="badgeCountSummary" class="text-xs text-emerald-400 font-semibold">4 / 8 Unlocked</span>
+          </div>
+          <div id="badgesGrid" class="grid grid-cols-2 gap-2.5">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+
+        <!-- Weekly Local Leaderboard -->
+        <div class="bg-slate-800/50 border border-slate-700/60 rounded-2xl p-3.5">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-bold text-sm text-white">🇿🇦 Weekly Gauteng Leaderboard</h3>
+            <span class="text-[10px] text-slate-400">Resets Mon 00:00</span>
+          </div>
+          <div id="leaderboardList" class="space-y-2">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 4: REWARDS & LOYALTY WALLET ==================== -->
+      <section id="tab-rewards" class="hidden flex-1 overflow-y-auto p-4 space-y-4 bg-slate-900">
+        <!-- FuelBucks Wallet Banner -->
+        <div class="bg-gradient-to-r from-amber-500/20 via-emerald-500/15 to-slate-800 border border-amber-500/30 rounded-2xl p-4 flex items-center justify-between">
+          <div>
+            <span class="text-[11px] font-bold uppercase tracking-wider text-amber-300">Redeemable Balance</span>
+            <div class="flex items-baseline gap-1.5 mt-0.5">
+              <span class="text-2xl font-extrabold text-white mono-price" id="rewardsCoinBalance">245</span>
+              <span class="text-xs font-semibold text-amber-400">🪙 FuelBucks</span>
+            </div>
+            <p class="text-[11px] text-slate-400 mt-1">Earn +15 🪙 per OCR scan or +10 🪙 per manual capture</p>
+          </div>
+          <button onclick="openCaptureModal()" class="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs px-3 py-2 rounded-xl shadow-lg transition">
+            + Earn More
+          </button>
+        </div>
+
+        <!-- SA Loyalty Cards Stacker -->
+        <div class="bg-slate-800/60 border border-slate-700/70 rounded-2xl p-3.5 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <h3 class="font-bold text-sm text-white">💳 My SA Loyalty Cashback Stack</h3>
+            <span class="text-[10px] text-emerald-400 font-semibold">Auto-calculates Effective Price</span>
+          </div>
+          <p class="text-xs text-slate-400">Select the loyalty programs you belong to so we subtract your cashback per litre on the map:</p>
+          <div id="loyaltyProgramsList" class="space-y-2 pt-1">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+
+        <!-- Perks Marketplace -->
+        <div>
+          <h3 class="font-bold text-sm text-white mb-2.5">🎁 Redeem FuelBucks for SA Perks</h3>
+          <div id="perksStoreGrid" class="grid grid-cols-1 gap-2.5">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- ==================== HYBRID CAPTURE MODAL (CAMERA OCR + QUICK STEPPER) ==================== -->
+    <div id="captureModal" class="hidden absolute inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col">
+      <!-- Modal Top Bar -->
+      <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-900">
+        <div>
+          <span class="text-[10px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span> GPS Geofence Locked
+          </span>
+          <select id="captureStationSelect" onchange="onCaptureStationChange()" class="bg-transparent text-sm font-extrabold text-white focus:outline-none mt-0.5">
+            <!-- Populated by JS -->
+          </select>
+        </div>
+        <button onclick="closeCaptureModal()" class="w-8 h-8 rounded-full bg-slate-800 text-slate-300 hover:text-white flex items-center justify-center font-bold">✕</button>
+      </div>
+
+      <!-- TOP HALF: Simulated Live Camera OCR Scanner -->
+      <div class="relative bg-slate-950 h-52 border-b border-slate-800 overflow-hidden flex flex-col justify-between p-3">
+        <video id="cameraPreview" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover opacity-35 hidden"></video>
+
+        <!-- Simulated Digital Forecourt Totem / Pump Display -->
+        <div class="relative z-10 flex items-center justify-between text-[11px]">
+          <span class="bg-slate-900/90 border border-slate-700 px-2 py-0.5 rounded-md text-slate-300 font-medium">
+            📷 Mode 1: On-Device AI OCR (+40 XP / +15 🪙)
+          </span>
+          <button onclick="simulateOcrScan()" class="bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/50 text-emerald-300 px-2.5 py-0.5 rounded-md font-bold transition">
+            ✨ Snap Pump / Totem
+          </button>
+        </div>
+
+        <!-- OCR Bounding Target Box -->
+        <div class="relative z-10 my-auto mx-auto w-11/12 max-w-[320px] h-24 border-2 border-dashed border-emerald-400/70 rounded-xl bg-slate-900/75 flex flex-col items-center justify-center p-2 overflow-hidden">
+          <div class="ocr-laser"></div>
+          <div class="text-[10px] text-slate-400 uppercase tracking-widest mb-1">Pump LCD / Totem Viewfinder</div>
+          <div class="flex items-center gap-3 mono-price">
+            <span id="ocrDetectedGrade" class="text-xs font-bold bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/30">DIESEL 50PPM</span>
+            <span id="ocrDetectedDigits" class="text-2xl font-extrabold text-emerald-400 tracking-wider">R 20.65 /L</span>
+          </div>
+          <span id="ocrStatusText" class="text-[10px] text-emerald-300/80 mt-1">Tap "Snap Pump / Totem" to auto-extract digits</span>
+        </div>
+
+        <div class="relative z-10 flex justify-between items-center text-[10px] text-slate-400">
+          <span>Supports Gilbarco/Wayne Pump LCD, Totem & Till Slips</span>
+          <label class="text-indigo-300 underline cursor-pointer">
+            Upload Photo
+            <input type="file" accept="image/*" onchange="simulateOcrScan(true)" class="hidden" />
+          </label>
+        </div>
+      </div>
+
+      <!-- BOTTOM HALF: Zero-Friction Manual Stepper & Amenity Tags -->
+      <div class="flex-1 p-4 flex flex-col justify-between overflow-y-auto space-y-3">
+        <!-- Fuel Grade Selector inside Capture -->
+        <div>
+          <label class="text-[11px] font-semibold text-slate-400 block mb-1.5">Select Fuel Grade Being Reported:</label>
+          <div class="grid grid-cols-4 gap-1.5" id="captureGradeTabs">
+            <button onclick="selectCaptureGrade('diesel50')" data-cgrade="diesel50" class="cap-grade-btn py-1.5 rounded-lg text-xs font-bold bg-emerald-500 text-slate-950">Diesel 50</button>
+            <button onclick="selectCaptureGrade('diesel10')" data-cgrade="diesel10" class="cap-grade-btn py-1.5 rounded-lg text-xs font-bold bg-slate-800 text-slate-300">Diesel 10</button>
+            <button onclick="selectCaptureGrade('ulp95')" data-cgrade="ulp95" class="cap-grade-btn py-1.5 rounded-lg text-xs font-bold bg-slate-800 text-slate-300">ULP 95</button>
+            <button onclick="selectCaptureGrade('ulp93')" data-cgrade="ulp93" class="cap-grade-btn py-1.5 rounded-lg text-xs font-bold bg-slate-800 text-slate-300">ULP 93</button>
+          </div>
+        </div>
+
+        <!-- Big Pre-filled Price Roller & Stepper Buttons -->
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-3 text-center">
+          <span class="text-[10px] uppercase tracking-wider text-slate-400 block">Pump Price (Rand per Litre)</span>
+          <div class="my-1.5 flex items-center justify-center gap-1 mono-price">
+            <span class="text-xl font-bold text-slate-400">R</span>
+            <input id="capturePriceInput" type="number" step="0.01" value="20.65" oninput="syncOcrDisplay(this.value)" class="bg-transparent text-4xl font-extrabold text-white text-center w-36 focus:outline-none border-b border-slate-700 focus:border-emerald-400" />
+            <span class="text-sm font-semibold text-slate-400">/L</span>
+          </div>
+
+          <!-- Quick Cent Stepper Buttons -->
+          <div class="grid grid-cols-4 gap-2 mt-2.5">
+            <button onclick="adjustCapturePrice(-0.05)" class="bg-slate-800 hover:bg-slate-700 active:scale-95 text-rose-300 font-bold py-2 rounded-xl text-xs transition">-5c</button>
+            <button onclick="adjustCapturePrice(-0.01)" class="bg-slate-800 hover:bg-slate-700 active:scale-95 text-rose-200 font-bold py-2 rounded-xl text-xs transition">-1c</button>
+            <button onclick="adjustCapturePrice(0.01)" class="bg-slate-800 hover:bg-slate-700 active:scale-95 text-emerald-200 font-bold py-2 rounded-xl text-xs transition">+1c</button>
+            <button onclick="adjustCapturePrice(0.05)" class="bg-slate-800 hover:bg-slate-700 active:scale-95 text-emerald-300 font-bold py-2 rounded-xl text-xs transition">+5c</button>
+          </div>
+        </div>
+
+        <!-- Quick Forecourt Amenity Checkboxes (+Bonus XP) -->
+        <div class="bg-slate-900/60 border border-slate-800/80 rounded-xl p-2.5">
+          <span class="text-[11px] font-semibold text-slate-300 block mb-1.5">Forecourt Status Check <span class="text-emerald-400">(+5 XP Bonus)</span>:</span>
+          <div class="flex flex-wrap gap-2 text-[11px]">
+            <label class="flex items-center gap-1.5 bg-slate-800 px-2.5 py-1 rounded-lg cursor-pointer">
+              <input type="checkbox" id="tagAirGauge" checked class="accent-emerald-500" />
+              <span>🛞 Working Air/Tyre Gauge</span>
+            </label>
+            <label class="flex items-center gap-1.5 bg-slate-800 px-2.5 py-1 rounded-lg cursor-pointer">
+              <input type="checkbox" id="tagBackupPower" checked class="accent-emerald-500" />
+              <span>⚡ Generator / Card Machine Up</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Submit Price Button -->
+        <button onclick="submitCapturedPrice()" class="w-full bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-extrabold py-3.5 rounded-2xl shadow-lg shadow-emerald-500/20 text-sm transition active:scale-98">
+          ✅ Submit Price Report & Claim Rewards
+        </button>
+      </div>
+    </div>
+
+    <!-- ==================== REWARD / ACHIEVEMENT TOAST OVERLAY ==================== -->
+    <div id="rewardToast" class="hidden absolute top-16 left-4 right-4 z-50 bg-slate-900/95 border-2 border-emerald-400 rounded-2xl p-4 shadow-2xl transform transition-all">
+      <div class="flex items-start justify-between">
+        <div class="flex items-center gap-3">
+          <div id="toastIcon" class="w-11 h-11 rounded-2xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-2xl">
+            🎉
+          </div>
+          <div>
+            <span id="toastBadgeTag" class="text-[10px] font-extrabold uppercase tracking-wider bg-emerald-500 text-slate-950 px-2 py-0.5 rounded">PRICE VERIFIED!</span>
+            <h4 id="toastTitle" class="font-extrabold text-sm text-white mt-1">+45 XP & +15 🪙 FuelBucks Earned!</h4>
+            <p id="toastSubtitle" class="text-xs text-slate-300 mt-0.5">Unlocked Badge: "First Drop"</p>
+          </div>
+        </div>
+        <button onclick="hideRewardToast()" class="text-slate-400 hover:text-white text-sm">✕</button>
+      </div>
+    </div>
+
+    <!-- ==================== BOTTOM NAVIGATION BAR + FLOATING '+' CAPTURE BUTTON ==================== -->
+    <nav class="bg-slate-950 border-t border-slate-800 px-3 py-1.5 flex items-center justify-around relative z-30">
+      <button onclick="switchTab('map')" id="nav-map" class="nav-btn flex flex-col items-center py-1 px-3 text-emerald-400">
+        <span class="text-lg">🗺️</span>
+        <span class="text-[10px] font-bold mt-0.5">Map</span>
+      </button>
+
+      <button onclick="switchTab('navigate')" id="nav-navigate" class="nav-btn flex flex-col items-center py-1 px-3 text-slate-400 hover:text-slate-200">
+        <span class="text-lg">🧭</span>
+        <span class="text-[10px] font-bold mt-0.5">Cheapest</span>
+      </button>
+
+      <!-- Center Oversized Capture Button -->
+      <div class="-mt-6">
+        <button onclick="openCaptureModal()" class="w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-300 text-slate-950 shadow-xl shadow-emerald-500/30 border-4 border-slate-900 flex flex-col items-center justify-center hover:scale-105 active:scale-95 transition">
+          <span class="text-xl font-extrabold leading-none">📷</span>
+          <span class="text-[9px] font-extrabold uppercase tracking-tighter mt-0.5">Snap</span>
+        </button>
+      </div>
+
+      <button onclick="switchTab('achievements')" id="nav-achievements" class="nav-btn flex flex-col items-center py-1 px-3 text-slate-400 hover:text-slate-200">
+        <span class="text-lg">🏆</span>
+        <span class="text-[10px] font-bold mt-0.5">Badges</span>
+      </button>
+
+      <button onclick="switchTab('rewards')" id="nav-rewards" class="nav-btn flex flex-col items-center py-1 px-3 text-slate-400 hover:text-slate-200">
+        <span class="text-lg">🎁</span>
+        <span class="text-[10px] font-bold mt-0.5">Perks</span>
+      </button>
+    </nav>
+
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
